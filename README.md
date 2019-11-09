@@ -45,7 +45,7 @@ Each encrypted file begins with the following file header:
 
     3 bytes - 'GCM'
 	1 byte - 0x01 (Version Major)
-	1 byte - 0x00 (Version Minor)
+	1 byte - 0x01 (Version Minor)
 	16 bytes - Salt for PBKDF2 key derivation
 	32 bytes - GCM-encrypted file encryption key (EFEK)
 	16 bytes - GCM tag for GCM-encrypted AES key
