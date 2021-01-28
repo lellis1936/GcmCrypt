@@ -72,6 +72,10 @@ The encrypted data is 65536 bytes long except for the final chunk which may be s
 - A nonce of all ones bits is used to authenticate (but not encrypt) the file header.
 - When encrypting chunks, the chunk sequence counter is used as the nonce. The nonce is a 12-byte big-endian value beginning at 1.
 
+A note on the fixed-value nonces:  Nonces should never be re-used with the same key.  On the face of it, this makes the hard-coded
+nonce values used here a bad idea.  However, unique keys are used for every encryption due to the salt of the PBKDF2 function.  Thus,
+the nonces are not re-used for the same key.
+
 ## Key generation and usage
 - The file encryption key (FEK) is generated using a cryptographic random number generator.
 - The master key (MK) is generated via the PBKDBF2 function using the password, a 16-byte random salt, SHA256 and an iteration count of 10,000.  This key is used to encrypt the FEK.
