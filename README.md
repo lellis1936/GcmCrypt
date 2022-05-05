@@ -6,6 +6,12 @@ This program offers ultra-high speed file encryption from the command-line.  Thi
 
 The CNG library for Windows Vista and later leverages hardware-assisted encryption available on modern Intel processor for GCM encryption.
 
+## Version History
+
+
+- 5/5/2022.   v1.2 Increase PBKDF2 iterations to 100,000. 
+- 8/1/2019.   v1.1 First version. 
+
 
 ## Execution Requirements
 - .Net 4.8  (available on the latest Windows 10 release or it can be downloaded)
@@ -45,7 +51,7 @@ Each encrypted file begins with the following file header:
 
     3 bytes - 'GCM'
 	1 byte - 0x01 (Version Major)
-	1 byte - 0x01 (Version Minor)
+	1 byte - 0x02 (Version Minor)
 	16 bytes - Salt for PBKDF2 key derivation
 	32 bytes - GCM-encrypted file encryption key (EFEK)
 	16 bytes - GCM tag for GCM-encrypted AES key

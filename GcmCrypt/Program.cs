@@ -19,14 +19,14 @@ namespace GcmCrypt
         const int KEY_LENGTH = 32;
         const int TAG_LENGTH = 16;
         const int SALT_LENGTH = 16;
-        const int V1_1_HEADER_LENGTH = 74;
+        const int V1_HEADER_LENGTH = 74;
 
         static readonly byte[] HEADER_NONCE = Enumerable.Repeat((byte)0xff, NONCE_LENGTH).ToArray();
         static readonly byte[] FEK_NONCE = Enumerable.Repeat((byte)0x00, NONCE_LENGTH).ToArray();
         static readonly byte[] NO_DATA = new byte[0];
 
         const byte VERSION_MAJOR = 1;
-        const byte VERSION_MINOR = 1;
+        const byte VERSION_MINOR = 2;
         static void Main(string[] args)
         {
             bool encrypting = false;
@@ -93,7 +93,9 @@ namespace GcmCrypt
 
         static void PrintUsage()
         {
-            Console.WriteLine("GcmCrypt usage is : ");
+            string version = VERSION_MAJOR.ToString() + "." + VERSION_MINOR.ToString();
+            Console.WriteLine($"GcmCrypt v{version}");
+            Console.WriteLine("Usage is : ");
             Console.WriteLine("\tGcmCrypt -e|-d [-f] [-compress] password infile outfile. ");
             Console.WriteLine();
             Console.WriteLine("Examples:");
@@ -113,6 +115,7 @@ namespace GcmCrypt
 
                 var rng = RNGCryptoServiceProvider.Create();
 
+
                 var sig = Encoding.UTF8.GetBytes("GCM");
                 var salt = new byte[SALT_LENGTH];
                 var key2 = new byte[KEY_LENGTH];
@@ -120,8 +123,11 @@ namespace GcmCrypt
                 rng.GetBytes(salt);
                 rng.GetBytes(key2);
 
-                Rfc2898DeriveBytes k1 = new Rfc2898DeriveBytes(password, salt, 10000, HashAlgorithmName.SHA256);
+                sw.Start();
+                Rfc2898DeriveBytes k1 = new Rfc2898DeriveBytes(password, salt, 100000, HashAlgorithmName.SHA256);
                 byte[] key1 = k1.GetBytes(32);
+
+                Console.WriteLine($"Key derivation took {sw.ElapsedMilliseconds} ms");
 
                 byte[] key2EncryptedTag = new byte[TAG_LENGTH];
                 key2Encrypted = GcmEncrypt(key2, key1, FEK_NONCE, key2EncryptedTag);
@@ -159,7 +165,7 @@ namespace GcmCrypt
                     using (var ms = new MemoryStream())
                     using (GZipStream gstr = compression ? new GZipStream(ms, CompressionMode.Compress, true) : null)
                     {
-                        sw.Start();
+                        sw.Restart();
                         if (compression)
                         {
                             fsIn.CopyTo(gstr);
@@ -199,6 +205,7 @@ namespace GcmCrypt
                     var key2EncryptedTag = new byte[TAG_LENGTH];
                     var compressed = new byte[1];
                     var BEchunkSize = new byte[4];
+                    int PBKDF2iterations;
 
                     int headerLength;
                     var headerTag = new byte[TAG_LENGTH];
@@ -206,17 +213,20 @@ namespace GcmCrypt
                     fsIn.ForceRead(sig, 0, sig.Length);
                     fsIn.ForceRead(versionMajor, 0, versionMajor.Length);
                     fsIn.ForceRead(versionMinor, 0, versionMinor.Length);
+
                     if (!sig.SequenceEqual(expectedSig)
-                    || versionMajor[0] != 1
-                    || versionMinor[0] != 1)
+                    || (versionMajor[0] != 1)
+                    || (versionMinor[0] != 1 && versionMinor[0] != 2))
                     {
                         Console.WriteLine("Unsupported input file version");
                         return;
                     }
                     else
                     {
-                        headerLength = V1_1_HEADER_LENGTH;
+                        headerLength = V1_HEADER_LENGTH;
                     }
+
+                    PBKDF2iterations = versionMinor[0] == 1 ? 10000 : 100000;
 
                     //Read in rest of V1.0 header pieces
                     fsIn.ForceRead(salt, 0, salt.Length);
@@ -231,8 +241,10 @@ namespace GcmCrypt
                     fsIn.ForceRead(header, 0, headerLength);
                     fsIn.ForceRead(headerTag, 0, headerTag.Length);
 
-                    Rfc2898DeriveBytes k1 = new Rfc2898DeriveBytes(password, salt, 10000, HashAlgorithmName.SHA256);
+                    sw.Start();
+                    Rfc2898DeriveBytes k1 = new Rfc2898DeriveBytes(password, salt, PBKDF2iterations, HashAlgorithmName.SHA256);
                     byte[] key1 = k1.GetBytes(32);
+                    Console.WriteLine($"Key derivation took {sw.ElapsedMilliseconds} ms");
 
                     GcmDecrypt(NO_DATA, key1, HEADER_NONCE, headerTag, header);
                     
@@ -245,7 +257,7 @@ namespace GcmCrypt
                     using (var ms = new MemoryStream())
                     using (GZipStream gstr = compression ? new GZipStream(ms, CompressionMode.Decompress) : null)
                     {
-                        sw.Start();
+                        sw.Restart();
                         if (compression)
                         {
                             ChunkedDecrypt(key2, chunkSize, fsIn, ms);
@@ -257,7 +269,7 @@ namespace GcmCrypt
                             ChunkedDecrypt(key2, chunkSize, fsIn, fsOut);
                         }
                         sw.Stop();
-                        Console.WriteLine("File decrypted. AES GCM decryption took {0} ms", sw.ElapsedMilliseconds);
+                        Console.WriteLine("File decrypted successfully. AES GCM decryption took {0} ms.", sw.ElapsedMilliseconds);
                     }
                 }
             }
