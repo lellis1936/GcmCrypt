@@ -84,7 +84,7 @@ the nonces are not re-used for the same key.
 
 ## Key generation and usage
 - The file encryption key (FEK) is generated using a cryptographic random number generator.
-- The master key (MK) is generated via the PBKDBF2 function using the password, a 16-byte random salt, SHA256 and an iteration count of 10,000.  This key is used to encrypt the FEK.
+- The master key (MK) is generated via the PBKDBF2 function using the password, a 16-byte random salt, SHA256 and an iteration count of 10,000 (for v1.1) or 100,000 (v1.2).  This key is used to encrypt the FEK.
 
 The encrypted FEK (EFEK) is stored in the header.  No other keys are stored in the encrypted file.
 
