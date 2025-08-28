@@ -96,5 +96,5 @@ Decryption will end with an error message if the input file is corrupted or modi
 ## Other Ports
 There is now a Python port of this program, which is OS-indepedent and file-compatible with this program.
 
-See [https://github.com/lellis1936/GcmCrypt-Python](https://github.com/lellis1936/GcmCrypt-Python)
+See [GcmCrypt-Python](https://github.com/lellis1936/GcmCrypt-Python)
 
