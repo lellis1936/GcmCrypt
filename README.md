@@ -93,3 +93,8 @@ All data in the encrypted file is protected via the GCM authentication tags, inc
 
 Decryption will end with an error message if the input file is corrupted or modified in any way.  The partial output file will remain and should be properly removed by the user. 
 
+## Other Ports
+There is now a Python port of this program, which is OS-indepedent and file-compatible with this program.
+
+See [https://github.com/lellis1936/GcmCrypt-Python](https://github.com/lellis1936/GcmCrypt-Python)
+
