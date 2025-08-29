@@ -7,6 +7,9 @@ using System.IO;
 using System.IO.Compression;
 using System.CodeDom.Compiler;
 using System.Diagnostics;
+using System.Collections.Concurrent;
+using System.Threading;
+using System.Threading.Tasks;
 using static AESGCM;
 
 namespace GcmCrypt
@@ -25,6 +28,7 @@ namespace GcmCrypt
         static readonly byte[] FEK_NONCE = Enumerable.Repeat((byte)0x00, NONCE_LENGTH).ToArray();
         static readonly byte[] NO_DATA = new byte[0];
 
+        const string APP_VERSION = "1.2.1"; // app/CLI version
         const byte VERSION_MAJOR = 1;
         const byte VERSION_MINOR = 2;
         static void Main(string[] args)
@@ -74,7 +78,6 @@ namespace GcmCrypt
                 return;
             }
 
-
             if (!forceOverwrite)
             {
                 if (File.Exists(outFile))
@@ -88,12 +91,11 @@ namespace GcmCrypt
                 EncryptFile(password, inFile, outFile, compress);
             else
                 DecryptFile(password, inFile, outFile);
-
         }
 
         static void PrintUsage()
         {
-            string version = VERSION_MAJOR.ToString() + "." + VERSION_MINOR.ToString();
+            string version = APP_VERSION;
             Console.WriteLine($"GcmCrypt v{version}");
             Console.WriteLine("Usage is : ");
             Console.WriteLine("\tGcmCrypt -e|-d [-f] [-compress] password infile outfile. ");
@@ -114,7 +116,6 @@ namespace GcmCrypt
                 var sw = new Stopwatch();
 
                 var rng = RNGCryptoServiceProvider.Create();
-
 
                 var sig = Encoding.UTF8.GetBytes("GCM");
                 var salt = new byte[SALT_LENGTH];
@@ -143,7 +144,7 @@ namespace GcmCrypt
                     byte[] header;
                     var headerTag = new byte[TAG_LENGTH];
 
-                    //Build the file header in memory and calculate a tag for it
+                    // Build the file header in memory and calculate a tag for it
                     using (MemoryStream ms = new MemoryStream())
                     {
                         ms.Write(sig, 0, sig.Length);                           //3
@@ -161,22 +162,37 @@ namespace GcmCrypt
                     fsOut.Write(header, 0, header.Length);
                     fsOut.Write(headerTag, 0, headerTag.Length);
 
-                    //Now get the encryption done.
-                    using (var ms = new MemoryStream())
-                    using (GZipStream gstr = compression ? new GZipStream(ms, CompressionMode.Compress, true) : null)
+                    // Now get the encryption done (streaming pipeline if compression enabled).
+                    sw.Restart();
+                    if (compression)
                     {
-                        sw.Restart();
-                        if (compression)
+                        using (var pcs = new ProducerConsumerStream())
                         {
-                            fsIn.CopyTo(gstr);
-                            gstr.Close();                                       //Must close!! Flush will not do it!
-                            ms.Position = 0;
-                            ChunkedEncrypt(key2, CHUNK_SIZE, ms, fsOut);
+                            // Producer: compress input into pcs
+                            var writerTask = Task.Run(() =>
+                            {
+                                try
+                                {
+                                    using (var gzs = new GZipStream(pcs, CompressionMode.Compress, leaveOpen: true))
+                                    {
+                                        fsIn.CopyTo(gzs);
+                                    }
+                                }
+                                finally
+                                {
+                                    pcs.Close(); // always signal end of stream, even on error
+                                }
+                            });
+
+                            // Consumer: encrypt from pcs into fsOut
+                            ChunkedEncrypt(key2, CHUNK_SIZE, pcs, fsOut);
+
+                            writerTask.Wait();
                         }
-                        else
-                        {
-                            ChunkedEncrypt(key2, CHUNK_SIZE, fsIn, fsOut);
-                        }
+                    }
+                    else
+                    {
+                        ChunkedEncrypt(key2, CHUNK_SIZE, fsIn, fsOut);
                     }
                 }
                 sw.Stop();
@@ -187,7 +203,6 @@ namespace GcmCrypt
                 Console.WriteLine($"Encryption failed: {ex.Message}");
             }
         }
-
 
         private static void DecryptFile(string password, string inputFile, string outputFile)
         {
@@ -228,14 +243,14 @@ namespace GcmCrypt
 
                     PBKDF2iterations = versionMinor[0] == 1 ? 10000 : 100000;
 
-                    //Read in rest of V1.0 header pieces
+                    // Read in rest of V1.0 header pieces
                     fsIn.ForceRead(salt, 0, salt.Length);
                     fsIn.ForceRead(key2Encrypted, 0, key2Encrypted.Length);
                     fsIn.ForceRead(key2EncryptedTag, 0, key2EncryptedTag.Length);
                     fsIn.ForceRead(compressed, 0, compressed.Length);
                     fsIn.ForceRead(BEchunkSize, 0, BEchunkSize.Length);
 
-                    //But then read full header in one chunk, and then tag,  to authenticate it before continuing
+                    // But then read full header in one chunk, and then tag, to authenticate it before continuing
                     var header = new byte[headerLength];
                     fsIn.Position = 0;
                     fsIn.ForceRead(header, 0, headerLength);
@@ -247,22 +262,40 @@ namespace GcmCrypt
                     Console.WriteLine($"Key derivation took {sw.ElapsedMilliseconds} ms");
 
                     GcmDecrypt(NO_DATA, key1, HEADER_NONCE, headerTag, header);
-                    
+
                     byte[] key2 = GcmDecrypt(key2Encrypted, key1, FEK_NONCE, key2EncryptedTag);
 
                     int chunkSize = BigEndianBytesToInt(BEchunkSize);
-                    bool compression = compressed[0] == 1 ? true : false;
+                    bool compression = compressed[0] == 1;
 
                     using (FileStream fsOut = new FileStream(outputFile, FileMode.Create, FileAccess.Write, FileShare.None, BUFFER_SIZE))
-                    using (var ms = new MemoryStream())
-                    using (GZipStream gstr = compression ? new GZipStream(ms, CompressionMode.Decompress) : null)
                     {
                         sw.Restart();
                         if (compression)
                         {
-                            ChunkedDecrypt(key2, chunkSize, fsIn, ms);
-                            ms.Position = 0;
-                            gstr.CopyTo(fsOut);
+                            using (var pcs = new ProducerConsumerStream()) // compressed plaintext producer
+                            {
+                                // Producer: decrypt compressed bytes into pcs
+                                var writerTask = Task.Run(() =>
+                                {
+                                    try
+                                    {
+                                        ChunkedDecrypt(key2, chunkSize, fsIn, pcs);
+                                    }
+                                    finally
+                                    {
+                                        pcs.Close(); // signal end-of-stream to reader
+                                    }
+                                });
+
+                                // Consumer: GZipStream reads compressed bytes from pcs and writes decompressed to fsOut
+                                using (var gzs = new GZipStream(pcs, CompressionMode.Decompress, leaveOpen: false))
+                                {
+                                    gzs.CopyTo(fsOut);
+                                }
+
+                                writerTask.Wait();
+                            }
                         }
                         else
                         {
@@ -278,6 +311,7 @@ namespace GcmCrypt
                 Console.WriteLine($"Decryption failed: {ex.Message}");
             }
         }
+
         private static bool PromptConfirmation(string confirmText)
         {
             ConsoleKey response;
@@ -335,8 +369,8 @@ namespace GcmCrypt
                 }
                 else
                 {
-                    //Some, or all of the tag is at the end of the data buffer
-                    //Fix the tag and extract the ciphertext
+                    // Some, or all of the tag is at the end of the data buffer
+                    // Fix the tag and extract the ciphertext
 
                     if (bytesRead < tag.Length)
                         throw new CryptographicException("Encryped file is corrupt");
@@ -344,8 +378,8 @@ namespace GcmCrypt
                     int ciphertextLen = bytesRead + tagBytesRead - tag.Length;
                     int tagDeficit = tag.Length - tagBytesRead;
 
-                    Array.Copy(tag, 0, tag, tagDeficit, tagBytesRead);      //move tag bytes read to tail of tag
-                    Array.Copy(buffer, ciphertextLen, tag, 0, tagDeficit);  //bring over the deficit
+                    Array.Copy(tag, 0, tag, tagDeficit, tagBytesRead);      // move tag bytes read to tail of tag
+                    Array.Copy(buffer, ciphertextLen, tag, 0, tagDeficit);  // bring over the deficit
                     byte[] ciphertext = Slice(buffer, 0, ciphertextLen);
                     plaintext = GcmDecrypt(ciphertext, key, nonce, tag);
                     output.Write(plaintext, 0, plaintext.Length);
@@ -389,18 +423,65 @@ namespace GcmCrypt
                 Array.Reverse(value);
 
             return BitConverter.ToInt32(value, 0);
-
         }
+    }
+
+    // Simple producer–consumer bridge so GZip (write-only when compressing) can feed
+    // ChunkedEncrypt/ChunkedDecrypt (readers) without buffering entire content.
+    public class ProducerConsumerStream : Stream
+    {
+        private readonly BlockingCollection<byte[]> _buffers = new BlockingCollection<byte[]>();
+        private byte[] _currentBuffer;
+        private int _currentOffset;
+
+        public override bool CanRead => true;
+        public override bool CanWrite => true;
+        public override bool CanSeek => false;
+        public override long Length => throw new NotSupportedException();
+        public override long Position { get => throw new NotSupportedException(); set => throw new NotSupportedException(); }
+
+        public override void Write(byte[] buffer, int offset, int count)
+        {
+            if (count == 0) return;
+            var chunk = new byte[count];
+            Buffer.BlockCopy(buffer, offset, chunk, 0, count);
+            _buffers.Add(chunk);
+        }
+
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            if (_currentBuffer == null || _currentOffset >= _currentBuffer.Length)
+            {
+                if (!_buffers.TryTake(out _currentBuffer, Timeout.Infinite))
+                    return 0; // completed
+                _currentOffset = 0;
+            }
+
+            int toCopy = Math.Min(count, _currentBuffer.Length - _currentOffset);
+            Buffer.BlockCopy(_currentBuffer, _currentOffset, buffer, offset, toCopy);
+            _currentOffset += toCopy;
+            return toCopy;
+        }
+
+        public override void Flush() { }
+
+        public override void Close()
+        {
+            _buffers.CompleteAdding();
+            base.Close();
+        }
+
+        // Not supported
+        public override long Seek(long offset, SeekOrigin origin) => throw new NotSupportedException();
+        public override void SetLength(long value) => throw new NotSupportedException();
     }
 
     static class MyExtensions
     {
         public static int ForceRead(this Stream stream, byte[] data, int offset, int length)
         {
-            //Guarantee all bytes of the data array are returned unless EOF 
-            //reached first.  Often a BinaryReader is used, but note only
-            //BinaryReader.GetBytes, not BinaryReader.Read will guarantee
-            //that the buffer is filled.
+            // Guarantee all bytes of the data array are returned unless EOF reached first.
+            // Often a BinaryReader is used, but note only BinaryReader.ReadBytes guarantees a full buffer.
             int remaining = data.Length;
             int read = 0;
             while (remaining > 0 && (read = stream.Read(data, offset, remaining)) != 0)
