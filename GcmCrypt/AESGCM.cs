@@ -1,16 +1,17 @@
-﻿//Requires PInvoke.BCrypt
-//Note that AES GCM encryption is included on .Net Core 3.0, but not in the full .Net framework.
-//This implementation requires PInvoke.BCrypt, and reulies on the Windows CNG Bcrypt library which
-//is available on Windows Vista or later.  Note also the requirement for unsafe code.
-//As coded requires VS 2015 / C#6 or above.
+// AES-GCM backend used by Program.cs.
+// .NET Framework builds use Windows CNG through PInvoke.BCrypt because .NET Framework
+// does not include a native AesGcm class. .NET 8 builds use System.Security.Cryptography.AesGcm.
 
 using System;
+#if NETFRAMEWORK
 using PInvoke;
 using static PInvoke.BCrypt;
+#endif
 using System.Security.Cryptography;
 
 public unsafe static class AESGCM
 {
+#if NETFRAMEWORK
     public unsafe static byte[] GcmEncrypt(byte[] pbData, byte[] pbKey, byte[] pbNonce, byte[] pbTag, byte[] pbAuthData = null)
     {
         pbAuthData = pbAuthData ?? new byte[0];
@@ -140,4 +141,34 @@ public unsafe static class AESGCM
             }
         }
     }
+#else
+    public static byte[] GcmEncrypt(byte[] pbData, byte[] pbKey, byte[] pbNonce, byte[] pbTag, byte[] pbAuthData = null)
+    {
+        if (pbTag == null)
+            throw new ArgumentNullException(nameof(pbTag));
+
+        pbAuthData = pbAuthData ?? Array.Empty<byte>();
+
+        byte[] pbCipherText = new byte[pbData.Length];
+        using (var aes = new AesGcm(pbKey, pbTag.Length))
+        {
+            aes.Encrypt(pbNonce, pbData, pbCipherText, pbTag, pbAuthData);
+        }
+
+        return pbCipherText;
+    }
+
+    public static byte[] GcmDecrypt(byte[] pbData, byte[] pbKey, byte[] pbNonce, byte[] pbTag, byte[] pbAuthData = null)
+    {
+        pbAuthData = pbAuthData ?? Array.Empty<byte>();
+
+        byte[] pbPlaintext = new byte[pbData.Length];
+        using (var aes = new AesGcm(pbKey, pbTag.Length))
+        {
+            aes.Decrypt(pbNonce, pbData, pbTag, pbPlaintext, pbAuthData);
+        }
+
+        return pbPlaintext;
+    }
+#endif
 }

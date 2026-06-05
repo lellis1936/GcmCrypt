@@ -17,7 +17,7 @@ namespace GcmCrypt
     class Program
     {
         const int BUFFER_SIZE = 64 * 1024;
-        const int CHUNK_SIZE = 64 * 1024;           //not currently configurable for encryption
+        const int CHUNK_SIZE = 64 * 1024;           // Stored in the file header, but not configurable from the CLI.
         const int NONCE_LENGTH = 12;
         const int KEY_LENGTH = 32;
         const int TAG_LENGTH = 16;
@@ -28,7 +28,7 @@ namespace GcmCrypt
         static readonly byte[] FEK_NONCE = Enumerable.Repeat((byte)0x00, NONCE_LENGTH).ToArray();
         static readonly byte[] NO_DATA = new byte[0];
 
-        const string APP_VERSION = "1.2.1"; // app/CLI version
+        const string APP_VERSION = "1.3.0"; // Application/CLI version, independent of encrypted file format version.
         const byte VERSION_MAJOR = 1;
         const byte VERSION_MINOR = 2;
         static void Main(string[] args)
@@ -115,14 +115,15 @@ namespace GcmCrypt
             {
                 var sw = new Stopwatch();
 
-                var rng = RNGCryptoServiceProvider.Create();
-
                 var sig = Encoding.UTF8.GetBytes("GCM");
                 var salt = new byte[SALT_LENGTH];
                 var key2 = new byte[KEY_LENGTH];
                 var key2Encrypted = new byte[KEY_LENGTH];
-                rng.GetBytes(salt);
-                rng.GetBytes(key2);
+                using (var rng = RandomNumberGenerator.Create())
+                {
+                    rng.GetBytes(salt);
+                    rng.GetBytes(key2);
+                }
 
                 sw.Start();
                 Rfc2898DeriveBytes k1 = new Rfc2898DeriveBytes(password, salt, 100000, HashAlgorithmName.SHA256);
@@ -243,7 +244,7 @@ namespace GcmCrypt
 
                     PBKDF2iterations = versionMinor[0] == 1 ? 10000 : 100000;
 
-                    // Read in rest of V1.0 header pieces
+                    // Read in the rest of the version 1 header pieces.
                     fsIn.ForceRead(salt, 0, salt.Length);
                     fsIn.ForceRead(key2Encrypted, 0, key2Encrypted.Length);
                     fsIn.ForceRead(key2EncryptedTag, 0, key2EncryptedTag.Length);
@@ -373,7 +374,7 @@ namespace GcmCrypt
                     // Fix the tag and extract the ciphertext
 
                     if (bytesRead < tag.Length)
-                        throw new CryptographicException("Encryped file is corrupt");
+                        throw new CryptographicException("Encrypted file is corrupt");
 
                     int ciphertextLen = bytesRead + tagBytesRead - tag.Length;
                     int tagDeficit = tag.Length - tagBytesRead;

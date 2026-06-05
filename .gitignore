@@ -137,9 +137,14 @@ DocProject/Help/html
 
 # Click-Once directory
 publish/
+release-assets/
+benchmark-output/
+smoke-test-output/
+release-notes-*.md
 
 # Publish Web Output
 *.[Pp]ublish.xml
+*.pubxml.user
 *.azurePubxml
 # TODO: Comment the next line if you want to checkin your web deploy settings
 # but database connection strings (with potential passwords) will be unencrypted

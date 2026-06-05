@@ -2,13 +2,14 @@
 High speed command-line AES GCM file encryption.
 
 ## Overview
-This program offers ultra-high speed file encryption from the command-line.  This is accomplished by using Microsoft's Windows CNG library directly rather than native .Net code.  
+This program offers high-speed file encryption from the command-line. The .NET Framework build uses Microsoft's Windows CNG library directly, while the .NET 8 build uses native `System.Security.Cryptography.AesGcm`.
 
 The CNG library for Windows Vista and later leverages hardware-assisted encryption available on modern Intel processor for GCM encryption.
 
 ## Version History
 
 
+- 6/5/2026.   v1.3 Add .NET 8 build with native AES-GCM, SDK-style multi-targeting, Visual Studio publish profiles, and GitHub release packaging.
 - 5/5/2022.   v1.2 Increase PBKDF2 iterations to 100,000. 
 - 8/1/2019.   v1.1 First version. 
 
@@ -16,6 +17,46 @@ The CNG library for Windows Vista and later leverages hardware-assisted encrypti
 ## Execution Requirements
 - .Net 4.8  (available on the latest Windows 10 release or it can be downloaded)
 - Windows version that supports CNG with GCM encryption (Vista or higher)
+
+The codebase can also build for .NET 8, where it uses the native `System.Security.Cryptography.AesGcm` implementation instead of Windows CNG. Files encrypted by either target use the same file format and can be decrypted by the other target.
+
+## Building
+
+The project builds both .NET Framework 4.8 and .NET 8 targets from the same codebase:
+
+    dotnet build GcmCrypt.sln -c Release
+
+Build outputs are written to:
+
+    GcmCrypt\bin\Release\net48\
+    GcmCrypt\bin\Release\net8.0\
+
+To build only one target:
+
+    dotnet build GcmCrypt\GcmCrypt.csproj -c Release -f net48
+    dotnet build GcmCrypt\GcmCrypt.csproj -c Release -f net8.0
+
+## Publishing
+
+Visual Studio publish profiles are included for the .NET 8 build:
+
+    dotnet publish GcmCrypt\GcmCrypt.csproj -f net8.0 /p:PublishProfile=net8-win-x64-single-trimmed-compressed
+    dotnet publish GcmCrypt\GcmCrypt.csproj -f net8.0 /p:PublishProfile=net8-framework-dependent
+
+The trimmed, compressed, self-contained `win-x64` profile produces a standalone `GcmCrypt.exe` under:
+
+    publish\net8-win-x64-single-trimmed-compressed\
+
+The framework-dependent profile is much smaller, but requires the .NET 8 runtime to be installed on the target machine. Its minimum runnable file set is:
+
+    GcmCrypt.exe
+    GcmCrypt.dll
+    GcmCrypt.deps.json
+    GcmCrypt.runtimeconfig.json
+
+Framework-dependent output is written to:
+
+    publish\net8-framework-dependent\
 
 ## Performance
 High performance will only be achieved if the processor supports hardware-assisted encryption. Most modern desktop processors do except for low-end CPUs (see [https://en.wikipedia.org/wiki/AES_instruction_set](https://en.wikipedia.org/wiki/AES_instruction_set)).  The program will still run properly if this requirement is not met, but at much reduced performance.
