@@ -71,8 +71,13 @@ for ($passwordIndex = 0; $passwordIndex -lt $passwords.Count; $passwordIndex++) 
             $decryptExe = Join-Path $repoRoot "GcmCrypt\bin\$Configuration\$decryptTarget\GcmCrypt.exe"
             $outputFile = Join-Path $testDir "decrypted-$passwordIndex-$encryptTarget-to-$decryptTarget.txt"
 
+            [System.IO.File]::WriteAllText($outputFile, "existing output")
+            [System.IO.File]::WriteAllText("$outputFile.PARTIAL", "stale partial output")
             & $decryptExe -d -f $password $encryptedFile $outputFile
             Assert-SameFile $inputFile $outputFile
+            if (Test-Path -LiteralPath "$outputFile.PARTIAL") {
+                throw "Successful decryption left a partial file for $encryptTarget to $decryptTarget"
+            }
         }
     }
 }
@@ -110,6 +115,12 @@ foreach ($encryptTarget in $TargetFrameworks) {
         $output = & $decryptExe -d -f $password $truncatedFile $outputFile 2>&1
         if (($output -join "`n") -notmatch "Decrypted file length mismatch") {
             throw "Trailing chunk truncation was not detected for $encryptTarget to $decryptTarget"
+        }
+        if (Test-Path -LiteralPath $outputFile) {
+            throw "Failed decryption created the requested final output for $encryptTarget to $decryptTarget"
+        }
+        if (!(Test-Path -LiteralPath "$outputFile.PARTIAL")) {
+            throw "Failed decryption did not retain a .PARTIAL output for $encryptTarget to $decryptTarget"
         }
     }
 }

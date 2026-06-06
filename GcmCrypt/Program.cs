@@ -29,7 +29,7 @@ namespace GcmCrypt
         static readonly byte[] FEK_NONCE = Enumerable.Repeat((byte)0x00, NONCE_LENGTH).ToArray();
         static readonly byte[] NO_DATA = new byte[0];
 
-        const string APP_VERSION = "1.4.0"; // Application/CLI version, independent of encrypted file format version.
+        const string APP_VERSION = "1.4.1"; // Application/CLI version, independent of encrypted file format version.
         const byte VERSION_MAJOR = 1;
         const byte VERSION_MINOR = 3;
         static void Main(string[] args)
@@ -209,6 +209,9 @@ namespace GcmCrypt
 
         private static void DecryptFile(string password, string inputFile, string outputFile)
         {
+            string partialOutputFile = outputFile + ".PARTIAL";
+            bool partialOutputCreated = false;
+
             try
             {
                 var sw = new Stopwatch();
@@ -278,8 +281,9 @@ namespace GcmCrypt
                             throw new CryptographicException("Encrypted file contains an invalid plaintext length");
                     }
 
-                    using (FileStream fsOut = new FileStream(outputFile, FileMode.Create, FileAccess.Write, FileShare.None, BUFFER_SIZE))
+                    using (FileStream fsOut = new FileStream(partialOutputFile, FileMode.Create, FileAccess.Write, FileShare.None, BUFFER_SIZE))
                     {
+                        partialOutputCreated = true;
                         sw.Restart();
                         if (compression)
                         {
@@ -317,13 +321,22 @@ namespace GcmCrypt
                                 $"Decrypted file length mismatch. Expected {expectedPlaintextLength} bytes, got {fsOut.Length} bytes");
 
                         sw.Stop();
-                        Console.WriteLine("File decrypted successfully. AES GCM decryption took {0} ms.", sw.ElapsedMilliseconds);
                     }
+
+                    if (File.Exists(outputFile))
+                        File.Replace(partialOutputFile, outputFile, null);
+                    else
+                        File.Move(partialOutputFile, outputFile);
+
+                    partialOutputCreated = false;
+                    Console.WriteLine("File decrypted successfully. AES GCM decryption took {0} ms.", sw.ElapsedMilliseconds);
                 }
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"Decryption failed: {ex.Message}");
+                if (partialOutputCreated && File.Exists(partialOutputFile))
+                    Console.WriteLine($"Partial output retained as: {partialOutputFile}");
             }
         }
 

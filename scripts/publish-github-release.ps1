@@ -1,5 +1,5 @@
 param(
-    [string]$Version = "1.4.0",
+    [string]$Version = "1.4.1",
     [string]$Remote = "origin",
     [string]$Repo = "lellis1936/GcmCrypt",
     [string]$TargetBranch = "master"
@@ -83,9 +83,10 @@ $notes = @"
 v$Version
 
 Changes:
-- Add authenticated original plaintext length to file format 1.3.
-- Detect removal of complete trailing encrypted chunks.
-- Preserve compatibility with file formats 1.1 and 1.2.
+- Write decryption output to a `.PARTIAL` file until complete validation succeeds.
+- Retain incomplete output for possible recovery or diagnosis after a decryption failure.
+- Protect an existing requested output file until replacement data is fully authenticated.
+- Preserve encrypted file format 1.3 and compatibility with formats 1.1 and 1.2.
 
 Assets:
 - GcmCrypt-net48.exe: .NET Framework 4.8 build.

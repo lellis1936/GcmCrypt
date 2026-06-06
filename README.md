@@ -9,7 +9,8 @@ The CNG library for Windows Vista and later leverages hardware-assisted encrypti
 ## Version History
 
 
-- 6/5/2026.   v1.4 Add authenticated original plaintext length to file format 1.3 so removal of complete trailing chunks is detected.
+- 6/6/2026.   v1.4.1 Retain incomplete decryption output with a `.PARTIAL` suffix and publish the requested output filename only after complete validation.
+- 6/5/2026.   v1.4 Add authenticated original plaintext length to file format 1.3 so removal of complete trailing chunks is detected. Use Windows CNG PBKDF2 in the .NET Framework build for faster key derivation.
 - 6/5/2026.   v1.3 Add .NET 8 build with native AES-GCM, SDK-style multi-targeting, Visual Studio publish profiles, and GitHub release packaging.
 - 5/5/2022.   v1.2 Increase PBKDF2 iterations to 100,000. 
 - 8/1/2019.   v1.1 First version. 
@@ -136,7 +137,7 @@ The encrypted FEK (EFEK) is stored in the header.  No other keys are stored in t
 ## Authentication
 All data in the encrypted file is protected via the GCM authentication tags, including all bytes of the file header. The authenticated original plaintext length also detects removal of complete chunks from the end of the encrypted file.
 
-Decryption will end with an error message if the input file is corrupted or modified in any way.  The partial output file will remain and should be properly removed by the user. 
+Decryption will end with an error message if the input file is corrupted or modified in any way. Decryption is written to the requested output filename with `.PARTIAL` appended. The file is renamed to the requested filename only after complete authentication and length validation; otherwise, the `.PARTIAL` file is retained for possible recovery or diagnosis.
 
 ## Other Ports
 There is now a Python port of this program, which is OS-indepedent and file-compatible with this program.
