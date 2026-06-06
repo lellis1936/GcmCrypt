@@ -9,6 +9,7 @@ The CNG library for Windows Vista and later leverages hardware-assisted encrypti
 ## Version History
 
 
+- 6/5/2026.   v1.4 Add authenticated original plaintext length to file format 1.3 so removal of complete trailing chunks is detected.
 - 6/5/2026.   v1.3 Add .NET 8 build with native AES-GCM, SDK-style multi-targeting, Visual Studio publish profiles, and GitHub release packaging.
 - 5/5/2022.   v1.2 Increase PBKDF2 iterations to 100,000. 
 - 8/1/2019.   v1.1 First version. 
@@ -92,17 +93,20 @@ Each encrypted file begins with the following file header:
 
     3 bytes - 'GCM'
 	1 byte - 0x01 (Version Major)
-	1 byte - 0x02 (Version Minor)
+	1 byte - 0x03 (Version Minor)
 	16 bytes - Salt for PBKDF2 key derivation
 	32 bytes - GCM-encrypted file encryption key (EFEK)
 	16 bytes - GCM tag for GCM-encrypted AES key
 	1 byte - 0x00 if file is not compressed, 0x01 if file is compressed
 	4 bytes - chunk size of file data (big-endian, currently hard-coded at 65536)
+	8 bytes - original plaintext file length (big-endian)
 
-After the 74-byte header, there is:
+After the 82-byte header, there is:
 
 	16 bytes - GCM tag to authenticate the header   
 	n bytes - AES GCM encrypted file data
+
+File formats 1.1 and 1.2 use the earlier 74-byte header without the original-length field and remain readable.
 
 
 Each chunk of encrypted data is in the following format:
@@ -125,12 +129,12 @@ the nonces are not re-used for the same key.
 
 ## Key generation and usage
 - The file encryption key (FEK) is generated using a cryptographic random number generator.
-- The master key (MK) is generated via the PBKDBF2 function using the password, a 16-byte random salt, SHA256 and an iteration count of 10,000 (for v1.1) or 100,000 (v1.2).  This key is used to encrypt the FEK.
+- The master key (MK) is generated via the PBKDBF2 function using the password, a 16-byte random salt, SHA256 and an iteration count of 10,000 (for v1.1) or 100,000 (v1.2 and later).  This key is used to encrypt the FEK.
 
 The encrypted FEK (EFEK) is stored in the header.  No other keys are stored in the encrypted file.
 
 ## Authentication
-All data in the encrypted file is protected via the GCM authentication tags, including all bytes of the file header.  
+All data in the encrypted file is protected via the GCM authentication tags, including all bytes of the file header. The authenticated original plaintext length also detects removal of complete chunks from the end of the encrypted file.
 
 Decryption will end with an error message if the input file is corrupted or modified in any way.  The partial output file will remain and should be properly removed by the user. 
 

@@ -25,6 +25,20 @@ function Assert-SameFile {
     }
 }
 
+function Invoke-Native {
+    param(
+        [string]$FilePath,
+        [string[]]$Arguments
+    )
+
+    $output = & $FilePath @Arguments 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        throw "$FilePath failed with exit code $LASTEXITCODE`n$($output -join "`n")"
+    }
+
+    return ($output -join "`n")
+}
+
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot = Split-Path -Parent $scriptDir
 $project = Join-Path $repoRoot "GcmCrypt\GcmCrypt.csproj"
@@ -41,7 +55,7 @@ $password = "testpass"
 [System.IO.File]::WriteAllText($inputFile, "GcmCrypt smoke test`r`nTargets: $($TargetFrameworks -join ', ')`r`n", [System.Text.Encoding]::UTF8)
 
 foreach ($targetFramework in $TargetFrameworks) {
-    dotnet build $project --configuration $Configuration --framework $targetFramework
+    Invoke-Native "dotnet" @("build", $project, "--configuration", $Configuration, "--framework", $targetFramework)
 }
 
 foreach ($encryptTarget in $TargetFrameworks) {
@@ -56,6 +70,42 @@ foreach ($encryptTarget in $TargetFrameworks) {
 
         & $decryptExe -d -f $password $encryptedFile $outputFile
         Assert-SameFile $inputFile $outputFile
+    }
+}
+
+$truncationInput = Join-Path $testDir "truncation-input.bin"
+$truncationBytes = New-Object byte[] (3 * 64 * 1024)
+for ($i = 0; $i -lt $truncationBytes.Length; $i++) {
+    $truncationBytes[$i] = [byte]($i % 251)
+}
+[System.IO.File]::WriteAllBytes($truncationInput, $truncationBytes)
+
+foreach ($encryptTarget in $TargetFrameworks) {
+    $encryptExe = Join-Path $repoRoot "GcmCrypt\bin\$Configuration\$encryptTarget\GcmCrypt.exe"
+    $encryptedFile = Join-Path $testDir "truncation-$encryptTarget.gcm"
+    & $encryptExe -e -f $password $truncationInput $encryptedFile | Out-Null
+
+    $truncatedFile = Join-Path $testDir "truncation-$encryptTarget-short.gcm"
+    Copy-Item -LiteralPath $encryptedFile -Destination $truncatedFile
+    $truncatedStream = [System.IO.File]::Open(
+        $truncatedFile,
+        [System.IO.FileMode]::Open,
+        [System.IO.FileAccess]::Write,
+        [System.IO.FileShare]::None)
+    try {
+        $truncatedStream.SetLength($truncatedStream.Length - (64 * 1024 + 16))
+    }
+    finally {
+        $truncatedStream.Dispose()
+    }
+
+    foreach ($decryptTarget in $TargetFrameworks) {
+        $decryptExe = Join-Path $repoRoot "GcmCrypt\bin\$Configuration\$decryptTarget\GcmCrypt.exe"
+        $outputFile = Join-Path $testDir "truncated-$encryptTarget-to-$decryptTarget.out"
+        $output = & $decryptExe -d -f $password $truncatedFile $outputFile 2>&1
+        if (($output -join "`n") -notmatch "Decrypted file length mismatch") {
+            throw "Trailing chunk truncation was not detected for $encryptTarget to $decryptTarget"
+        }
     }
 }
 

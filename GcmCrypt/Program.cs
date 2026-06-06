@@ -22,15 +22,16 @@ namespace GcmCrypt
         const int KEY_LENGTH = 32;
         const int TAG_LENGTH = 16;
         const int SALT_LENGTH = 16;
-        const int V1_HEADER_LENGTH = 74;
+        const int V1_1_V1_2_HEADER_LENGTH = 74;
+        const int V1_3_HEADER_LENGTH = 82;
 
         static readonly byte[] HEADER_NONCE = Enumerable.Repeat((byte)0xff, NONCE_LENGTH).ToArray();
         static readonly byte[] FEK_NONCE = Enumerable.Repeat((byte)0x00, NONCE_LENGTH).ToArray();
         static readonly byte[] NO_DATA = new byte[0];
 
-        const string APP_VERSION = "1.3.0"; // Application/CLI version, independent of encrypted file format version.
+        const string APP_VERSION = "1.4.0"; // Application/CLI version, independent of encrypted file format version.
         const byte VERSION_MAJOR = 1;
-        const byte VERSION_MINOR = 2;
+        const byte VERSION_MINOR = 3;
         static void Main(string[] args)
         {
             bool encrypting = false;
@@ -139,6 +140,7 @@ namespace GcmCrypt
                 {
                     var compressed = new byte[1] { (byte)(compression ? 1 : 0) };
                     var BEchunkSize = BigEndianBytesFromInt(CHUNK_SIZE);
+                    var BEoriginalLength = BigEndianBytesFromLong(fsIn.Length);
                     var versionMajor = new byte[] { VERSION_MAJOR };
                     var versionMinor = new byte[] { VERSION_MINOR };
 
@@ -156,6 +158,7 @@ namespace GcmCrypt
                         ms.Write(key2EncryptedTag, 0, key2EncryptedTag.Length); //16
                         ms.Write(compressed, 0, compressed.Length);             //1
                         ms.Write(BEchunkSize, 0, BEchunkSize.Length);           //4
+                        ms.Write(BEoriginalLength, 0, BEoriginalLength.Length); //8
                         header = ms.ToArray();
                         GcmEncrypt(NO_DATA, key1, HEADER_NONCE, headerTag, header);
                     }
@@ -221,7 +224,9 @@ namespace GcmCrypt
                     var key2EncryptedTag = new byte[TAG_LENGTH];
                     var compressed = new byte[1];
                     var BEchunkSize = new byte[4];
+                    var BEoriginalLength = new byte[8];
                     int PBKDF2iterations;
+                    long expectedPlaintextLength = -1;
 
                     int headerLength;
                     var headerTag = new byte[TAG_LENGTH];
@@ -232,15 +237,13 @@ namespace GcmCrypt
 
                     if (!sig.SequenceEqual(expectedSig)
                     || (versionMajor[0] != 1)
-                    || (versionMinor[0] != 1 && versionMinor[0] != 2))
+                    || (versionMinor[0] != 1 && versionMinor[0] != 2 && versionMinor[0] != 3))
                     {
                         Console.WriteLine("Unsupported input file version");
                         return;
                     }
-                    else
-                    {
-                        headerLength = V1_HEADER_LENGTH;
-                    }
+
+                    headerLength = versionMinor[0] >= 3 ? V1_3_HEADER_LENGTH : V1_1_V1_2_HEADER_LENGTH;
 
                     PBKDF2iterations = versionMinor[0] == 1 ? 10000 : 100000;
 
@@ -250,6 +253,8 @@ namespace GcmCrypt
                     fsIn.ForceRead(key2EncryptedTag, 0, key2EncryptedTag.Length);
                     fsIn.ForceRead(compressed, 0, compressed.Length);
                     fsIn.ForceRead(BEchunkSize, 0, BEchunkSize.Length);
+                    if (versionMinor[0] >= 3)
+                        fsIn.ForceRead(BEoriginalLength, 0, BEoriginalLength.Length);
 
                     // But then read full header in one chunk, and then tag, to authenticate it before continuing
                     var header = new byte[headerLength];
@@ -268,6 +273,12 @@ namespace GcmCrypt
 
                     int chunkSize = BigEndianBytesToInt(BEchunkSize);
                     bool compression = compressed[0] == 1;
+                    if (versionMinor[0] >= 3)
+                    {
+                        expectedPlaintextLength = BigEndianBytesToLong(BEoriginalLength);
+                        if (expectedPlaintextLength < 0)
+                            throw new CryptographicException("Encrypted file contains an invalid plaintext length");
+                    }
 
                     using (FileStream fsOut = new FileStream(outputFile, FileMode.Create, FileAccess.Write, FileShare.None, BUFFER_SIZE))
                     {
@@ -302,6 +313,11 @@ namespace GcmCrypt
                         {
                             ChunkedDecrypt(key2, chunkSize, fsIn, fsOut);
                         }
+
+                        if (expectedPlaintextLength >= 0 && fsOut.Length != expectedPlaintextLength)
+                            throw new CryptographicException(
+                                $"Decrypted file length mismatch. Expected {expectedPlaintextLength} bytes, got {fsOut.Length} bytes");
+
                         sw.Stop();
                         Console.WriteLine("File decrypted successfully. AES GCM decryption took {0} ms.", sw.ElapsedMilliseconds);
                     }
@@ -424,6 +440,24 @@ namespace GcmCrypt
                 Array.Reverse(value);
 
             return BitConverter.ToInt32(value, 0);
+        }
+
+        static byte[] BigEndianBytesFromLong(long value)
+        {
+            byte[] result = BitConverter.GetBytes(value);
+            if (BitConverter.IsLittleEndian)
+                Array.Reverse(result);
+            return result;
+        }
+
+        static long BigEndianBytesToLong(byte[] input)
+        {
+            byte[] value = (byte[])input.Clone();
+
+            if (BitConverter.IsLittleEndian)
+                Array.Reverse(value);
+
+            return BitConverter.ToInt64(value, 0);
         }
     }
 

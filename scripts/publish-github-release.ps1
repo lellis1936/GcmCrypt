@@ -1,5 +1,5 @@
 param(
-    [string]$Version = "1.3.0",
+    [string]$Version = "1.4.0",
     [string]$Remote = "origin",
     [string]$Repo = "lellis1936/GcmCrypt",
     [string]$TargetBranch = "master"
@@ -83,9 +83,9 @@ $notes = @"
 v$Version
 
 Changes:
-- Add .NET 8 build using native System.Security.Cryptography.AesGcm.
-- Keep .NET Framework 4.8 build using Windows CNG.
-- Add SDK-style multi-target build and release packaging.
+- Add authenticated original plaintext length to file format 1.3.
+- Detect removal of complete trailing encrypted chunks.
+- Preserve compatibility with file formats 1.1 and 1.2.
 
 Assets:
 - GcmCrypt-net48.exe: .NET Framework 4.8 build.
