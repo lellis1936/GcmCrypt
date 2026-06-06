@@ -127,8 +127,7 @@ namespace GcmCrypt
                 }
 
                 sw.Start();
-                Rfc2898DeriveBytes k1 = new Rfc2898DeriveBytes(password, salt, 100000, HashAlgorithmName.SHA256);
-                byte[] key1 = k1.GetBytes(32);
+                byte[] key1 = PasswordKeyDerivation.DeriveKey(password, salt, 100000, KEY_LENGTH);
 
                 Console.WriteLine($"Key derivation took {sw.ElapsedMilliseconds} ms");
 
@@ -263,8 +262,7 @@ namespace GcmCrypt
                     fsIn.ForceRead(headerTag, 0, headerTag.Length);
 
                     sw.Start();
-                    Rfc2898DeriveBytes k1 = new Rfc2898DeriveBytes(password, salt, PBKDF2iterations, HashAlgorithmName.SHA256);
-                    byte[] key1 = k1.GetBytes(32);
+                    byte[] key1 = PasswordKeyDerivation.DeriveKey(password, salt, PBKDF2iterations, KEY_LENGTH);
                     Console.WriteLine($"Key derivation took {sw.ElapsedMilliseconds} ms");
 
                     GcmDecrypt(NO_DATA, key1, HEADER_NONCE, headerTag, header);

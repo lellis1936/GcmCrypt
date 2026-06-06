@@ -51,28 +51,33 @@ if (Test-Path -LiteralPath $testDir) {
 New-Item -ItemType Directory -Path $testDir | Out-Null
 
 $inputFile = Join-Path $testDir "input.txt"
-$password = "testpass"
+$passwords = @("testpass", "passwörd-漢字")
 [System.IO.File]::WriteAllText($inputFile, "GcmCrypt smoke test`r`nTargets: $($TargetFrameworks -join ', ')`r`n", [System.Text.Encoding]::UTF8)
 
 foreach ($targetFramework in $TargetFrameworks) {
     Invoke-Native "dotnet" @("build", $project, "--configuration", $Configuration, "--framework", $targetFramework)
 }
 
-foreach ($encryptTarget in $TargetFrameworks) {
-    $encryptExe = Join-Path $repoRoot "GcmCrypt\bin\$Configuration\$encryptTarget\GcmCrypt.exe"
-    $encryptedFile = Join-Path $testDir "encrypted-$encryptTarget.gcm"
+for ($passwordIndex = 0; $passwordIndex -lt $passwords.Count; $passwordIndex++) {
+    $password = $passwords[$passwordIndex]
 
-    & $encryptExe -e -f $password $inputFile $encryptedFile
+    foreach ($encryptTarget in $TargetFrameworks) {
+        $encryptExe = Join-Path $repoRoot "GcmCrypt\bin\$Configuration\$encryptTarget\GcmCrypt.exe"
+        $encryptedFile = Join-Path $testDir "encrypted-$passwordIndex-$encryptTarget.gcm"
 
-    foreach ($decryptTarget in $TargetFrameworks) {
-        $decryptExe = Join-Path $repoRoot "GcmCrypt\bin\$Configuration\$decryptTarget\GcmCrypt.exe"
-        $outputFile = Join-Path $testDir "decrypted-$encryptTarget-to-$decryptTarget.txt"
+        & $encryptExe -e -f $password $inputFile $encryptedFile
 
-        & $decryptExe -d -f $password $encryptedFile $outputFile
-        Assert-SameFile $inputFile $outputFile
+        foreach ($decryptTarget in $TargetFrameworks) {
+            $decryptExe = Join-Path $repoRoot "GcmCrypt\bin\$Configuration\$decryptTarget\GcmCrypt.exe"
+            $outputFile = Join-Path $testDir "decrypted-$passwordIndex-$encryptTarget-to-$decryptTarget.txt"
+
+            & $decryptExe -d -f $password $encryptedFile $outputFile
+            Assert-SameFile $inputFile $outputFile
+        }
     }
 }
 
+$password = $passwords[0]
 $truncationInput = Join-Path $testDir "truncation-input.bin"
 $truncationBytes = New-Object byte[] (3 * 64 * 1024)
 for ($i = 0; $i -lt $truncationBytes.Length; $i++) {
