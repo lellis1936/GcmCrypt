@@ -30,12 +30,12 @@ Upload these two files:
 Existing GitHub releases are left untouched. To create a new release, install GitHub CLI, authenticate, commit the release changes, merge them to `master`, make sure the working tree is clean, then run:
 
     gh auth login
-    .\scripts\publish-github-release.ps1 -Version 1.4.1
+    .\scripts\publish-github-release.ps1 -Version 1.5.0
 
 The script:
 
 - verifies GitHub CLI authentication
 - requires the working tree to be clean
 - builds release assets
-- creates and pushes an annotated tag such as `v1.4.1`
-- creates a GitHub Release titled `Version 1.4.1` with the two release assets
+- creates and pushes an annotated tag such as `v1.5.0`
+- creates a GitHub Release titled `Version 1.5.0` with the two release assets

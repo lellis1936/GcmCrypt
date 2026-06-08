@@ -1,6 +1,7 @@
 param(
     [string]$Configuration = "Debug",
-    [string[]]$TargetFrameworks = @("net48", "net8.0")
+    [string[]]$TargetFrameworks = @("net48", "net8.0"),
+    [string]$LegacyExecutable
 )
 
 $ErrorActionPreference = "Stop"
@@ -39,12 +40,31 @@ function Invoke-Native {
     return ($output -join "`n")
 }
 
+function Read-BigEndianInt32 {
+    param(
+        [byte[]]$Bytes,
+        [int]$Offset
+    )
+
+    $valueBytes = New-Object byte[] 4
+    [Array]::Copy($Bytes, $Offset, $valueBytes, 0, 4)
+    if ([BitConverter]::IsLittleEndian) {
+        [Array]::Reverse($valueBytes)
+    }
+    return [BitConverter]::ToInt32($valueBytes, 0)
+}
+
 $scriptDir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $repoRoot = Split-Path -Parent $scriptDir
 $project = Join-Path $repoRoot "GcmCrypt\GcmCrypt.csproj"
 $testDir = Join-Path $repoRoot "smoke-test-output"
 
 if (Test-Path -LiteralPath $testDir) {
+    $resolvedRepoRoot = [System.IO.Path]::GetFullPath($repoRoot)
+    $resolvedTestDir = [System.IO.Path]::GetFullPath($testDir)
+    if (!$resolvedTestDir.StartsWith($resolvedRepoRoot + [System.IO.Path]::DirectorySeparatorChar)) {
+        throw "Refusing to remove smoke-test output outside the repository"
+    }
     Remove-Item -LiteralPath $testDir -Recurse -Force
 }
 
@@ -67,6 +87,21 @@ for ($passwordIndex = 0; $passwordIndex -lt $passwords.Count; $passwordIndex++) 
 
         & $encryptExe -e -f $password $inputFile $encryptedFile
 
+        $encryptedBytes = [System.IO.File]::ReadAllBytes($encryptedFile)
+        if ($encryptedBytes.Length -lt 102) {
+            throw "Encrypted file is too short to contain a v1.5 header"
+        }
+        if ($encryptedBytes[0] -ne [byte][char]'G' -or
+            $encryptedBytes[1] -ne [byte][char]'C' -or
+            $encryptedBytes[2] -ne [byte][char]'M' -or
+            $encryptedBytes[3] -ne 1 -or
+            $encryptedBytes[4] -ne 5) {
+            throw "Encryption did not write file format 1.5"
+        }
+        if ((Read-BigEndianInt32 $encryptedBytes 82) -ne 600000) {
+            throw "File format 1.5 contains an unexpected default PBKDF2 iteration count"
+        }
+
         foreach ($decryptTarget in $TargetFrameworks) {
             $decryptExe = Join-Path $repoRoot "GcmCrypt\bin\$Configuration\$decryptTarget\GcmCrypt.exe"
             $outputFile = Join-Path $testDir "decrypted-$passwordIndex-$encryptTarget-to-$decryptTarget.txt"
@@ -79,6 +114,83 @@ for ($passwordIndex = 0; $passwordIndex -lt $passwords.Count; $passwordIndex++) 
                 throw "Successful decryption left a partial file for $encryptTarget to $decryptTarget"
             }
         }
+    }
+}
+
+$customIterations = 750000
+foreach ($encryptTarget in $TargetFrameworks) {
+    $encryptExe = Join-Path $repoRoot "GcmCrypt\bin\$Configuration\$encryptTarget\GcmCrypt.exe"
+    $encryptedFile = Join-Path $testDir "custom-iterations-$encryptTarget.gcm"
+    & $encryptExe -e -f -iter $customIterations $passwords[0] $inputFile $encryptedFile
+
+    $encryptedBytes = [System.IO.File]::ReadAllBytes($encryptedFile)
+    if ((Read-BigEndianInt32 $encryptedBytes 82) -ne $customIterations) {
+        throw "Custom PBKDF2 iteration count was not stored for $encryptTarget"
+    }
+
+    foreach ($decryptTarget in $TargetFrameworks) {
+        $decryptExe = Join-Path $repoRoot "GcmCrypt\bin\$Configuration\$decryptTarget\GcmCrypt.exe"
+        $outputFile = Join-Path $testDir "custom-iterations-$encryptTarget-to-$decryptTarget.txt"
+        & $decryptExe -d -f $passwords[0] $encryptedFile $outputFile
+        Assert-SameFile $inputFile $outputFile
+    }
+}
+
+$cliTestExe = Join-Path $repoRoot "GcmCrypt\bin\$Configuration\$($TargetFrameworks[0])\GcmCrypt.exe"
+$cliOutput = & $cliTestExe -d -f -iter 600000 $passwords[0] `
+    (Join-Path $testDir "encrypted-0-$($TargetFrameworks[0]).gcm") `
+    (Join-Path $testDir "invalid-cli.out") 2>&1
+if (($cliOutput -join "`n") -notmatch "-iter is only valid for encryption") {
+    throw "-iter was not rejected during decryption"
+}
+
+$invalidSignatureFile = Join-Path $testDir "invalid-signature.gcm"
+[System.IO.File]::WriteAllBytes(
+    $invalidSignatureFile,
+    [byte[]]([byte][char]'N', [byte][char]'O', [byte][char]'T', 0xFF, 0xFF))
+
+$unsupportedVersionFile = Join-Path $testDir "unsupported-version.gcm"
+[System.IO.File]::WriteAllBytes(
+    $unsupportedVersionFile,
+    [byte[]]([byte][char]'G', [byte][char]'C', [byte][char]'M', 0xFF, 0xFF))
+
+foreach ($targetFramework in $TargetFrameworks) {
+    $decryptExe = Join-Path $repoRoot "GcmCrypt\bin\$Configuration\$targetFramework\GcmCrypt.exe"
+
+    $invalidSignatureOutput = & $decryptExe -d -f $passwords[0] `
+        $invalidSignatureFile (Join-Path $testDir "invalid-signature-$targetFramework.out") 2>&1
+    $invalidSignatureMessage = $invalidSignatureOutput -join "`n"
+    $hasSignatureError = $invalidSignatureMessage -match "Input file is not a GcmCrypt file"
+    $hasVersionError = $invalidSignatureMessage -match "Unsupported input file version"
+    if (!$hasSignatureError -or $hasVersionError) {
+        throw "Invalid signature was not reported correctly for $targetFramework"
+    }
+
+    $unsupportedVersionOutput = & $decryptExe -d -f $passwords[0] `
+        $unsupportedVersionFile (Join-Path $testDir "unsupported-version-$targetFramework.out") 2>&1
+    if (($unsupportedVersionOutput -join "`n") -notmatch "Unsupported input file version") {
+        throw "Unsupported version was not reported correctly for $targetFramework"
+    }
+}
+
+if ($LegacyExecutable) {
+    if (!(Test-Path -LiteralPath $LegacyExecutable)) {
+        throw "Legacy executable not found: $LegacyExecutable"
+    }
+
+    $legacyEncryptedFile = Join-Path $testDir "legacy-v1.3.gcm"
+    & $LegacyExecutable -e -f $passwords[0] $inputFile $legacyEncryptedFile
+
+    $legacyBytes = [System.IO.File]::ReadAllBytes($legacyEncryptedFile)
+    if ($legacyBytes[3] -ne 1 -or $legacyBytes[4] -ne 3) {
+        throw "Legacy executable did not produce file format 1.3"
+    }
+
+    foreach ($decryptTarget in $TargetFrameworks) {
+        $decryptExe = Join-Path $repoRoot "GcmCrypt\bin\$Configuration\$decryptTarget\GcmCrypt.exe"
+        $outputFile = Join-Path $testDir "legacy-v1.3-to-$decryptTarget.txt"
+        & $decryptExe -d -f $passwords[0] $legacyEncryptedFile $outputFile
+        Assert-SameFile $inputFile $outputFile
     }
 }
 
@@ -122,6 +234,27 @@ foreach ($encryptTarget in $TargetFrameworks) {
         if (!(Test-Path -LiteralPath "$outputFile.PARTIAL")) {
             throw "Failed decryption did not retain a .PARTIAL output for $encryptTarget to $decryptTarget"
         }
+    }
+}
+
+$parameterSource = Join-Path $testDir "encrypted-0-$($TargetFrameworks[0]).gcm"
+$invalidParametersFile = Join-Path $testDir "invalid-pbkdf2-iterations.gcm"
+$invalidParametersBytes = [System.IO.File]::ReadAllBytes($parameterSource)
+$invalidParametersBytes[82] = 0x00
+$invalidParametersBytes[83] = 0x01
+$invalidParametersBytes[84] = 0x86
+$invalidParametersBytes[85] = 0x9F
+[System.IO.File]::WriteAllBytes($invalidParametersFile, $invalidParametersBytes)
+
+foreach ($decryptTarget in $TargetFrameworks) {
+    $decryptExe = Join-Path $repoRoot "GcmCrypt\bin\$Configuration\$decryptTarget\GcmCrypt.exe"
+    $outputFile = Join-Path $testDir "invalid-pbkdf2-iterations-$decryptTarget.out"
+    $output = & $decryptExe -d -f $passwords[0] $invalidParametersFile $outputFile 2>&1
+    if (($output -join "`n") -notmatch "invalid PBKDF2 iteration count") {
+        throw "Invalid PBKDF2 iteration count was not rejected for $decryptTarget"
+    }
+    if (Test-Path -LiteralPath $outputFile) {
+        throw "Invalid PBKDF2 parameters created an output file for $decryptTarget"
     }
 }
 

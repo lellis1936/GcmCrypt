@@ -24,27 +24,34 @@ namespace GcmCrypt
         const int SALT_LENGTH = 16;
         const int V1_1_V1_2_HEADER_LENGTH = 74;
         const int V1_3_HEADER_LENGTH = 82;
+        const int V1_5_HEADER_LENGTH = 86;
+        const int DEFAULT_PBKDF2_ITERATIONS = 600000;
+        const int MIN_PBKDF2_ITERATIONS = 100000;
+        const int MAX_PBKDF2_ITERATIONS = 10000000;
 
         static readonly byte[] HEADER_NONCE = Enumerable.Repeat((byte)0xff, NONCE_LENGTH).ToArray();
         static readonly byte[] FEK_NONCE = Enumerable.Repeat((byte)0x00, NONCE_LENGTH).ToArray();
         static readonly byte[] NO_DATA = new byte[0];
 
-        const string APP_VERSION = "1.4.1"; // Application/CLI version, independent of encrypted file format version.
+        const string APP_VERSION = "1.5.0"; // Application/CLI version, independent of encrypted file format version.
         const byte VERSION_MAJOR = 1;
-        const byte VERSION_MINOR = 3;
+        const byte VERSION_MINOR = 5;
         static void Main(string[] args)
         {
             bool encrypting = false;
             bool decrypting = false;
             bool compress = false;
             bool forceOverwrite = false;
+            bool iterationsSpecified = false;
+            int iterations = DEFAULT_PBKDF2_ITERATIONS;
             string password = "";
             string inFile = "";
             string outFile = "";
 
             int parmCount = 0;
-            foreach (string arg in args)
+            for (int argIndex = 0; argIndex < args.Length; argIndex++)
             {
+                string arg = args[argIndex];
                 if (arg.StartsWith("-"))
                 {
                     switch (arg.ToLower())
@@ -53,6 +60,19 @@ namespace GcmCrypt
                         case "-d": decrypting = true; break;
                         case "-f": forceOverwrite = true; break;
                         case "-compress": compress = true; break;
+                        case "-iter":
+                            iterationsSpecified = true;
+                            if (++argIndex >= args.Length
+                            || !int.TryParse(args[argIndex], out iterations)
+                            || iterations < MIN_PBKDF2_ITERATIONS
+                            || iterations > MAX_PBKDF2_ITERATIONS)
+                            {
+                                Console.WriteLine(
+                                    $"-iter must be an integer from {MIN_PBKDF2_ITERATIONS} to {MAX_PBKDF2_ITERATIONS}.");
+                                PrintUsage();
+                                return;
+                            }
+                            break;
                     }
                 }
                 else
@@ -79,6 +99,13 @@ namespace GcmCrypt
                 return;
             }
 
+            if (decrypting && iterationsSpecified)
+            {
+                Console.WriteLine("-iter is only valid for encryption.");
+                PrintUsage();
+                return;
+            }
+
             if (!forceOverwrite)
             {
                 if (File.Exists(outFile))
@@ -89,7 +116,7 @@ namespace GcmCrypt
             }
 
             if (encrypting)
-                EncryptFile(password, inFile, outFile, compress);
+                EncryptFile(password, inFile, outFile, compress, iterations);
             else
                 DecryptFile(password, inFile, outFile);
         }
@@ -99,18 +126,25 @@ namespace GcmCrypt
             string version = APP_VERSION;
             Console.WriteLine($"GcmCrypt v{version}");
             Console.WriteLine("Usage is : ");
-            Console.WriteLine("\tGcmCrypt -e|-d [-f] [-compress] password infile outfile. ");
+            Console.WriteLine("\tGcmCrypt -e|-d [-f] [-compress] [-iter count] password infile outfile. ");
             Console.WriteLine();
             Console.WriteLine("Examples:");
-            Console.WriteLine("\tGcmCrypt -e -compress mypass myinputfile myencryptedoutputfile");
+            Console.WriteLine("\tGcmCrypt -e -compress -iter 600000 mypass myinputfile myencryptedoutputfile");
             Console.WriteLine("\tGcmCrypt -d mypass myencryptedinputfile mydecryptedoutputfile");
             Console.WriteLine();
             Console.WriteLine("\n-compress option only needed for encryption");
+            Console.WriteLine(
+                $"\n-iter option only applies to encryption and accepts {MIN_PBKDF2_ITERATIONS} to {MAX_PBKDF2_ITERATIONS}");
             Console.WriteLine("\n-f option will silently overwrite the output file if it exists");
             Console.WriteLine();
         }
 
-        private static void EncryptFile(string password, string inputFile, string outputFile, bool compression)
+        private static void EncryptFile(
+            string password,
+            string inputFile,
+            string outputFile,
+            bool compression,
+            int iterations)
         {
             try
             {
@@ -127,7 +161,8 @@ namespace GcmCrypt
                 }
 
                 sw.Start();
-                byte[] key1 = PasswordKeyDerivation.DeriveKey(password, salt, 100000, KEY_LENGTH);
+                byte[] key1 = PasswordKeyDerivation.DeriveKey(
+                    password, salt, iterations, KEY_LENGTH);
 
                 Console.WriteLine($"Key derivation took {sw.ElapsedMilliseconds} ms");
 
@@ -140,6 +175,7 @@ namespace GcmCrypt
                     var compressed = new byte[1] { (byte)(compression ? 1 : 0) };
                     var BEchunkSize = BigEndianBytesFromInt(CHUNK_SIZE);
                     var BEoriginalLength = BigEndianBytesFromLong(fsIn.Length);
+                    var BEkdfIterations = BigEndianBytesFromInt(iterations);
                     var versionMajor = new byte[] { VERSION_MAJOR };
                     var versionMinor = new byte[] { VERSION_MINOR };
 
@@ -158,6 +194,7 @@ namespace GcmCrypt
                         ms.Write(compressed, 0, compressed.Length);             //1
                         ms.Write(BEchunkSize, 0, BEchunkSize.Length);           //4
                         ms.Write(BEoriginalLength, 0, BEoriginalLength.Length); //8
+                        ms.Write(BEkdfIterations, 0, BEkdfIterations.Length);   //4
                         header = ms.ToArray();
                         GcmEncrypt(NO_DATA, key1, HEADER_NONCE, headerTag, header);
                     }
@@ -217,75 +254,21 @@ namespace GcmCrypt
                 var sw = new Stopwatch();
                 using (FileStream fsIn = new FileStream(inputFile, FileMode.Open, FileAccess.Read, FileShare.Read, BUFFER_SIZE))
                 {
-                    var sig = new byte[3];
-                    var expectedSig = Encoding.UTF8.GetBytes("GCM");
-                    var versionMajor = new byte[1];
-                    var versionMinor = new byte[1];
-                    var salt = new byte[SALT_LENGTH];
-                    var key2Encrypted = new byte[KEY_LENGTH];
-                    var key2EncryptedTag = new byte[TAG_LENGTH];
-                    var compressed = new byte[1];
-                    var BEchunkSize = new byte[4];
-                    var BEoriginalLength = new byte[8];
-                    int PBKDF2iterations;
-                    long expectedPlaintextLength = -1;
-
-                    int headerLength;
-                    var headerTag = new byte[TAG_LENGTH];
-
-                    fsIn.ForceRead(sig, 0, sig.Length);
-                    fsIn.ForceRead(versionMajor, 0, versionMajor.Length);
-                    fsIn.ForceRead(versionMinor, 0, versionMinor.Length);
-
-                    if (!sig.SequenceEqual(expectedSig)
-                    || (versionMajor[0] != 1)
-                    || (versionMinor[0] != 1 && versionMinor[0] != 2 && versionMinor[0] != 3))
-                    {
-                        Console.WriteLine("Unsupported input file version");
-                        return;
-                    }
-
-                    headerLength = versionMinor[0] >= 3 ? V1_3_HEADER_LENGTH : V1_1_V1_2_HEADER_LENGTH;
-
-                    PBKDF2iterations = versionMinor[0] == 1 ? 10000 : 100000;
-
-                    // Read in the rest of the version 1 header pieces.
-                    fsIn.ForceRead(salt, 0, salt.Length);
-                    fsIn.ForceRead(key2Encrypted, 0, key2Encrypted.Length);
-                    fsIn.ForceRead(key2EncryptedTag, 0, key2EncryptedTag.Length);
-                    fsIn.ForceRead(compressed, 0, compressed.Length);
-                    fsIn.ForceRead(BEchunkSize, 0, BEchunkSize.Length);
-                    if (versionMinor[0] >= 3)
-                        fsIn.ForceRead(BEoriginalLength, 0, BEoriginalLength.Length);
-
-                    // But then read full header in one chunk, and then tag, to authenticate it before continuing
-                    var header = new byte[headerLength];
-                    fsIn.Position = 0;
-                    fsIn.ForceRead(header, 0, headerLength);
-                    fsIn.ForceRead(headerTag, 0, headerTag.Length);
+                    var header = ReadEncryptedFileHeader(fsIn);
 
                     sw.Start();
-                    byte[] key1 = PasswordKeyDerivation.DeriveKey(password, salt, PBKDF2iterations, KEY_LENGTH);
+                    byte[] key1 = DeriveMasterKey(password, header.Kdf, header.Salt);
                     Console.WriteLine($"Key derivation took {sw.ElapsedMilliseconds} ms");
 
-                    GcmDecrypt(NO_DATA, key1, HEADER_NONCE, headerTag, header);
+                    GcmDecrypt(NO_DATA, key1, HEADER_NONCE, header.HeaderTag, header.HeaderBytes);
 
-                    byte[] key2 = GcmDecrypt(key2Encrypted, key1, FEK_NONCE, key2EncryptedTag);
-
-                    int chunkSize = BigEndianBytesToInt(BEchunkSize);
-                    bool compression = compressed[0] == 1;
-                    if (versionMinor[0] >= 3)
-                    {
-                        expectedPlaintextLength = BigEndianBytesToLong(BEoriginalLength);
-                        if (expectedPlaintextLength < 0)
-                            throw new CryptographicException("Encrypted file contains an invalid plaintext length");
-                    }
+                    byte[] key2 = GcmDecrypt(header.EncryptedFileKey, key1, FEK_NONCE, header.EncryptedFileKeyTag);
 
                     using (FileStream fsOut = new FileStream(partialOutputFile, FileMode.Create, FileAccess.Write, FileShare.None, BUFFER_SIZE))
                     {
                         partialOutputCreated = true;
                         sw.Restart();
-                        if (compression)
+                        if (header.Compressed)
                         {
                             using (var pcs = new ProducerConsumerStream()) // compressed plaintext producer
                             {
@@ -294,7 +277,7 @@ namespace GcmCrypt
                                 {
                                     try
                                     {
-                                        ChunkedDecrypt(key2, chunkSize, fsIn, pcs);
+                                        ChunkedDecrypt(key2, header.ChunkSize, fsIn, pcs);
                                     }
                                     finally
                                     {
@@ -313,12 +296,12 @@ namespace GcmCrypt
                         }
                         else
                         {
-                            ChunkedDecrypt(key2, chunkSize, fsIn, fsOut);
+                            ChunkedDecrypt(key2, header.ChunkSize, fsIn, fsOut);
                         }
 
-                        if (expectedPlaintextLength >= 0 && fsOut.Length != expectedPlaintextLength)
+                        if (header.OriginalLength.HasValue && fsOut.Length != header.OriginalLength.Value)
                             throw new CryptographicException(
-                                $"Decrypted file length mismatch. Expected {expectedPlaintextLength} bytes, got {fsOut.Length} bytes");
+                                $"Decrypted file length mismatch. Expected {header.OriginalLength.Value} bytes, got {fsOut.Length} bytes");
 
                         sw.Stop();
                     }
@@ -332,12 +315,142 @@ namespace GcmCrypt
                     Console.WriteLine("File decrypted successfully. AES GCM decryption took {0} ms.", sw.ElapsedMilliseconds);
                 }
             }
+            catch (CryptographicException ex) when (
+                ex.Message == "Input file is not a GcmCrypt file"
+                || ex.Message == "Unsupported input file version")
+            {
+                Console.WriteLine(ex.Message);
+            }
             catch (Exception ex)
             {
                 Console.WriteLine($"Decryption failed: {ex.Message}");
                 if (partialOutputCreated && File.Exists(partialOutputFile))
                     Console.WriteLine($"Partial output retained as: {partialOutputFile}");
             }
+        }
+
+        private static EncryptedFileHeader ReadEncryptedFileHeader(FileStream input)
+        {
+            var expectedSig = Encoding.UTF8.GetBytes("GCM");
+            var signature = new byte[expectedSig.Length];
+            if (input.ForceRead(signature, 0, signature.Length) != signature.Length
+            || !signature.SequenceEqual(expectedSig))
+                throw new CryptographicException("Input file is not a GcmCrypt file");
+
+            var version = new byte[2];
+            if (input.ForceRead(version, 0, version.Length) != version.Length)
+                throw new CryptographicException("Encrypted file is corrupt");
+
+            byte versionMajor = version[0];
+            byte versionMinor = version[1];
+
+            if (versionMajor != 1
+            || (versionMinor != 1
+            && versionMinor != 2
+            && versionMinor != 3
+            && versionMinor != 5))
+                throw new CryptographicException("Unsupported input file version");
+
+            int headerLength = HeaderLengthForVersion(versionMinor);
+            var headerBytes = new byte[headerLength];
+            var headerTag = new byte[TAG_LENGTH];
+
+            input.Position = 0;
+            if (input.ForceRead(headerBytes, 0, headerBytes.Length) != headerBytes.Length
+            || input.ForceRead(headerTag, 0, headerTag.Length) != headerTag.Length)
+                throw new CryptographicException("Encrypted file is corrupt");
+
+            return ParseEncryptedFileHeader(versionMinor, headerBytes, headerTag);
+        }
+
+        private static EncryptedFileHeader ParseEncryptedFileHeader(byte versionMinor, byte[] headerBytes, byte[] headerTag)
+        {
+            switch (versionMinor)
+            {
+                case 1:
+                case 2:
+                    return ParseV11V12Header(versionMinor, headerBytes, headerTag);
+                case 3:
+                    return ParseV13Header(headerBytes, headerTag);
+                case 5:
+                    return ParseV15Header(headerBytes, headerTag);
+                default:
+                    throw new CryptographicException("Unsupported input file version");
+            }
+        }
+
+        private static EncryptedFileHeader ParseV11V12Header(
+            byte versionMinor,
+            byte[] headerBytes,
+            byte[] headerTag)
+        {
+            var header = ParseCommonHeader(versionMinor, headerBytes, headerTag);
+            header.Kdf = KdfParameters.Pbkdf2(versionMinor == 1 ? 10000 : 100000);
+            return header;
+        }
+
+        private static EncryptedFileHeader ParseV13Header(byte[] headerBytes, byte[] headerTag)
+        {
+            var header = ParseCommonHeader(3, headerBytes, headerTag);
+            header.OriginalLength = ParseOriginalLength(headerBytes);
+            header.Kdf = KdfParameters.Pbkdf2(100000);
+            return header;
+        }
+
+        private static EncryptedFileHeader ParseV15Header(byte[] headerBytes, byte[] headerTag)
+        {
+            var header = ParseCommonHeader(5, headerBytes, headerTag);
+            header.OriginalLength = ParseOriginalLength(headerBytes);
+            int iterations = BigEndianBytesToInt(CopyBytes(headerBytes, 82, 4));
+            ValidatePbkdf2Iterations(iterations);
+            header.Kdf = KdfParameters.Pbkdf2(iterations);
+            return header;
+        }
+
+        private static EncryptedFileHeader ParseCommonHeader(
+            byte versionMinor,
+            byte[] headerBytes,
+            byte[] headerTag)
+        {
+            var header = new EncryptedFileHeader
+            {
+                VersionMinor = versionMinor,
+                HeaderBytes = headerBytes,
+                HeaderTag = headerTag,
+                Salt = CopyBytes(headerBytes, 5, SALT_LENGTH),
+                EncryptedFileKey = CopyBytes(headerBytes, 21, KEY_LENGTH),
+                EncryptedFileKeyTag = CopyBytes(headerBytes, 53, TAG_LENGTH),
+                Compressed = headerBytes[69] == 1,
+                ChunkSize = BigEndianBytesToInt(CopyBytes(headerBytes, 70, 4))
+            };
+
+            return header;
+        }
+
+        private static long ParseOriginalLength(byte[] headerBytes)
+        {
+            long originalLength = BigEndianBytesToLong(CopyBytes(headerBytes, 74, 8));
+            if (originalLength < 0)
+                throw new CryptographicException("Encrypted file contains an invalid plaintext length");
+            return originalLength;
+        }
+
+        private static int HeaderLengthForVersion(byte versionMinor)
+        {
+            if (versionMinor == 5)
+                return V1_5_HEADER_LENGTH;
+            if (versionMinor >= 3)
+                return V1_3_HEADER_LENGTH;
+            return V1_1_V1_2_HEADER_LENGTH;
+        }
+
+        private static byte[] DeriveMasterKey(string password, KdfParameters kdf, byte[] salt)
+        {
+            return PasswordKeyDerivation.DeriveKey(
+                password,
+                salt,
+                kdf.Iterations,
+                KEY_LENGTH);
         }
 
         private static bool PromptConfirmation(string confirmText)
@@ -453,6 +566,19 @@ namespace GcmCrypt
             return BitConverter.ToInt32(value, 0);
         }
 
+        private static void ValidatePbkdf2Iterations(int iterations)
+        {
+            if (iterations < MIN_PBKDF2_ITERATIONS || iterations > MAX_PBKDF2_ITERATIONS)
+                throw new CryptographicException("Encrypted file contains an invalid PBKDF2 iteration count");
+        }
+
+        private static byte[] CopyBytes(byte[] input, int offset, int length)
+        {
+            var output = new byte[length];
+            Array.Copy(input, offset, output, 0, length);
+            return output;
+        }
+
         static byte[] BigEndianBytesFromLong(long value)
         {
             byte[] result = BitConverter.GetBytes(value);
@@ -469,6 +595,33 @@ namespace GcmCrypt
                 Array.Reverse(value);
 
             return BitConverter.ToInt64(value, 0);
+        }
+
+        private sealed class KdfParameters
+        {
+            internal int Iterations { get; private set; }
+
+            internal static KdfParameters Pbkdf2(int iterations)
+            {
+                return new KdfParameters
+                {
+                    Iterations = iterations
+                };
+            }
+        }
+
+        private sealed class EncryptedFileHeader
+        {
+            internal byte VersionMinor { get; set; }
+            internal byte[] HeaderBytes { get; set; }
+            internal byte[] HeaderTag { get; set; }
+            internal byte[] Salt { get; set; }
+            internal byte[] EncryptedFileKey { get; set; }
+            internal byte[] EncryptedFileKeyTag { get; set; }
+            internal bool Compressed { get; set; }
+            internal int ChunkSize { get; set; }
+            internal long? OriginalLength { get; set; }
+            internal KdfParameters Kdf { get; set; }
         }
     }
 

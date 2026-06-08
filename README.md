@@ -9,6 +9,7 @@ The CNG library for Windows Vista and later leverages hardware-assisted encrypti
 ## Version History
 
 
+- 6/8/2026.   v1.5 Increase the default PBKDF2-HMAC-SHA256 iteration count to 600,000. File format 1.5 stores and authenticates the iteration count, and the `-iter` encryption option permits values from 100,000 through 10,000,000.
 - 6/6/2026.   v1.4.1 Retain incomplete decryption output with a `.PARTIAL` suffix and publish the requested output filename only after complete validation.
 - 6/5/2026.   v1.4 Add authenticated original plaintext length to file format 1.3 so removal of complete trailing chunks is detected. Use Windows CNG PBKDF2 in the .NET Framework build for faster key derivation.
 - 6/5/2026.   v1.3 Add .NET 8 build with native AES-GCM, SDK-style multi-targeting, Visual Studio publish profiles, and GitHub release packaging.
@@ -71,9 +72,11 @@ For both encryption and decryption, the optional  **-f** parameter forces silent
 
 ### Encryption
 
-    gcmcrypt -e [-f] [-compress] password inputfile outputfile
+    gcmcrypt -e [-f] [-compress] [-iter count] password inputfile outputfile
 
-Notes:  The *compress* option compresses the input before encryption.   This will substantially slow down the processing and is recommended only for special cases.
+Notes: The *compress* option compresses the input before encryption. This will substantially slow down the processing and is recommended only for special cases.
+
+The optional `-iter` setting controls the PBKDF2-HMAC-SHA256 iteration count for a newly encrypted file. The default is 600,000 and the accepted range is 100,000 through 10,000,000. Decryption reads the iteration count from the authenticated file header.
 
 
 ### Decryption
@@ -94,20 +97,21 @@ Each encrypted file begins with the following file header:
 
     3 bytes - 'GCM'
 	1 byte - 0x01 (Version Major)
-	1 byte - 0x03 (Version Minor)
+	1 byte - 0x05 (Version Minor)
 	16 bytes - Salt for PBKDF2 key derivation
 	32 bytes - GCM-encrypted file encryption key (EFEK)
 	16 bytes - GCM tag for GCM-encrypted AES key
 	1 byte - 0x00 if file is not compressed, 0x01 if file is compressed
 	4 bytes - chunk size of file data (big-endian, currently hard-coded at 65536)
 	8 bytes - original plaintext file length (big-endian)
+	4 bytes - PBKDF2-HMAC-SHA256 iteration count (big-endian, default 600000)
 
-After the 82-byte header, there is:
+After the 86-byte header, there is:
 
 	16 bytes - GCM tag to authenticate the header   
 	n bytes - AES GCM encrypted file data
 
-File formats 1.1 and 1.2 use the earlier 74-byte header without the original-length field and remain readable.
+File formats 1.1 and 1.2 use the earlier 74-byte header without the original-length field. File format 1.3 uses the 82-byte header without an explicit iteration count. All remain readable.
 
 
 Each chunk of encrypted data is in the following format:
@@ -120,17 +124,19 @@ The encrypted data is 65536 bytes long except for the final chunk which may be s
 - Each file uses a random  GCM key of 256 bits (32 bytes).
 - 12-byte nonces are used for all encryption as recommended by the GCM specifications
 - 16-byte tags (the maximum) are used for all data chunks  
-- A nonce of all zero bits is used with a PBKDBF2-generated 256-bit key to encrypt the file encryption key.  
+- A nonce of all zero bits is used with a PBKDF2-derived 256-bit key to encrypt the file encryption key.
 - A nonce of all ones bits is used to authenticate (but not encrypt) the file header.
 - When encrypting chunks, the chunk sequence counter is used as the nonce. The nonce is a 12-byte big-endian value beginning at 1.
 
 A note on the fixed-value nonces:  Nonces should never be re-used with the same key.  On the face of it, this makes the hard-coded
-nonce values used here a bad idea.  However, unique keys are used for every encryption due to the salt of the PBKDF2 function.  Thus,
+nonce values used here a bad idea. However, unique keys are used for every encryption due to the PBKDF2 salt. Thus,
 the nonces are not re-used for the same key.
 
 ## Key generation and usage
 - The file encryption key (FEK) is generated using a cryptographic random number generator.
-- The master key (MK) is generated via the PBKDBF2 function using the password, a 16-byte random salt, SHA256 and an iteration count of 10,000 (for v1.1) or 100,000 (v1.2 and later).  This key is used to encrypt the FEK.
+- For file format 1.5, the master key (MK) is generated using PBKDF2-HMAC-SHA256 with a 16-byte random salt and an authenticated iteration count. The default is 600,000.
+- For legacy file formats, the MK is generated using PBKDF2-HMAC-SHA256 with 10,000 iterations for v1.1 or 100,000 iterations for v1.2 and v1.3.
+- The v1.5 iteration count is validated against defensive limits before PBKDF2 runs.
 
 The encrypted FEK (EFEK) is stored in the header.  No other keys are stored in the encrypted file.
 
